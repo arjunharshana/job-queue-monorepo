@@ -1,3 +1,1 @@
-import { ping } from '@jobqueue/core';
-
-console.log(ping());
+console.log("Worker process ready to be built.");
