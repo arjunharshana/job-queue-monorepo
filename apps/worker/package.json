@@ -8,6 +8,7 @@
     "dev": "tsc -b -w"
   },
   "dependencies": {
-    "@jobqueue/core": "*"
+    "@jobqueue/core": "*",
+    "dotenv": "^17.4.2"
   }
 }
