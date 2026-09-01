@@ -1,5 +1,13 @@
 import { Pool, PoolConfig } from 'pg';
 import { Job, EnqueueOptions, JsonValue } from './types.js';
+import {
+  DEFAULT_MAX_ATTEMPTS,
+  DEFAULT_LEASE_SECONDS,
+  JOB_STATUS,
+  JobEventType,
+  REAPER_ERROR_MESSAGE,
+} from './constants.js';
+import { computeBackoffMs, CLEAR_LOCK_FIELDS_SQL } from './utils.js';
 
 export class JobQueue {
   private pool: Pool;
@@ -30,7 +38,7 @@ export class JobQueue {
         options.queueName,
         JSON.stringify(options.payload),
         options.priority ?? 0,
-        options.maxAttempts ?? 3,
+        options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
         options.runAt ?? new Date()
       ];
       
@@ -41,7 +49,7 @@ export class JobQueue {
         INSERT INTO job_events (job_id, event_type)
         VALUES ($1, $2);
       `;
-      await client.query(eventInsertQuery, [job.id, 'created']);
+      await client.query(eventInsertQuery, [job.id, JobEventType.CREATED]);
 
       await client.query('COMMIT');
       return job;
@@ -57,7 +65,7 @@ export class JobQueue {
   public async claim<T extends JsonValue>(
     queueName: string,
     workerId: string,
-    leaseSeconds: number = 30
+    leaseSeconds: number = DEFAULT_LEASE_SECONDS
   ): Promise<Job<T> | null> {
     const client = await this.pool.connect();
     
@@ -68,7 +76,7 @@ export class JobQueue {
         WITH next_job AS (
             SELECT id FROM jobs
             WHERE queue_name = $1 
-              AND status = 'pending' 
+              AND status = '${JOB_STATUS.PENDING}' 
               AND run_at <= NOW()
             ORDER BY priority ASC, run_at ASC
             LIMIT 1
@@ -76,7 +84,7 @@ export class JobQueue {
         )
         UPDATE jobs
         SET 
-            status = 'active',
+            status = '${JOB_STATUS.ACTIVE}',
             locked_at = NOW(),
             locked_by = $2,
             lease_expires_at = NOW() + ($3 * INTERVAL '1 second'),
@@ -90,7 +98,7 @@ export class JobQueue {
       
       if (rows.length === 0) {
         await client.query('COMMIT');
-        return null; // Queue is empty
+        return null;
       }
 
       const job = rows[0] as Job<T>;
@@ -99,7 +107,7 @@ export class JobQueue {
         INSERT INTO job_events (job_id, event_type, worker_id)
         VALUES ($1, $2, $3);
       `;
-      await client.query(eventInsertQuery, [job.id, 'claimed', workerId]);
+      await client.query(eventInsertQuery, [job.id, JobEventType.CLAIMED, workerId]);
 
       await client.query('COMMIT');
       return job;
@@ -117,27 +125,25 @@ public async complete(jobId: string, workerId: string): Promise<boolean> {
   try {
     await client.query('BEGIN');
 
-    const updateQuery = `
-      UPDATE jobs
-      SET status = 'completed',
-          locked_at = NULL,
-          locked_by = NULL,
-          lease_expires_at = NULL,
-          updated_at = NOW()
-      WHERE id = $1 AND locked_by = $2 AND status = 'active'
-      RETURNING id;
-    `;
-    const { rows } = await client.query(updateQuery, [jobId, workerId]);
+      const updateQuery = `
+        UPDATE jobs
+        SET status = '${JOB_STATUS.COMPLETED}',
+            ${CLEAR_LOCK_FIELDS_SQL},
+            updated_at = NOW()
+        WHERE id = $1 AND locked_by = $2 AND status = '${JOB_STATUS.ACTIVE}'
+        RETURNING id;
+      `;
+      const { rows } = await client.query(updateQuery, [jobId, workerId]);
 
     if (rows.length === 0) {
       await client.query('ROLLBACK');
-      return false; // lease was already reassigned elsewhere
+      return false;
     }
 
-    await client.query(
-      `INSERT INTO job_events (job_id, event_type, worker_id) VALUES ($1, 'completed', $2)`,
-      [jobId, workerId]
-    );
+      await client.query(
+        `INSERT INTO job_events (job_id, event_type, worker_id) VALUES ($1, $2, $3)`,
+        [jobId, JobEventType.COMPLETED, workerId]
+      );
 
     await client.query('COMMIT');
     return true;
@@ -154,12 +160,12 @@ public async fail(jobId: string, workerId: string, errorMessage: string): Promis
   try {
     await client.query('BEGIN');
 
-    const selectQuery = `
-      SELECT attempts, max_attempts FROM jobs
-      WHERE id = $1 AND locked_by = $2 AND status = 'active'
-      FOR UPDATE;
-    `;
-    const { rows } = await client.query(selectQuery, [jobId, workerId]);
+      const selectQuery = `
+        SELECT attempts, max_attempts FROM jobs
+        WHERE id = $1 AND locked_by = $2 AND status = '${JOB_STATUS.ACTIVE}'
+        FOR UPDATE;
+      `;
+      const { rows } = await client.query(selectQuery, [jobId, workerId]);
 
     if (rows.length === 0) {
       await client.query('ROLLBACK');
@@ -169,41 +175,36 @@ public async fail(jobId: string, workerId: string, errorMessage: string): Promis
     const { attempts, max_attempts } = rows[0];
     const isDead = attempts >= max_attempts;
 
-    if (isDead) {
-      await client.query(
-        `UPDATE jobs
-         SET status = 'dead', last_error = $1, locked_at = NULL, locked_by = NULL,
-             lease_expires_at = NULL, updated_at = NOW()
-         WHERE id = $2`,
-        [errorMessage, jobId]
-      );
-      await client.query(
-        `INSERT INTO job_events (job_id, event_type, worker_id, error_message)
-         VALUES ($1, 'failed_dead', $2, $3)`,
-        [jobId, workerId, errorMessage]
-      );
-    } else {
-      // Exponential backoff with jitter: base 2s, doubling per attempt, capped at 5 min.
-      const baseMs = 2000;
-      const capMs = 5 * 60 * 1000;
-      const backoffMs = Math.min(capMs, baseMs * 2 ** attempts);
-      const jitterMs = Math.random() * backoffMs * 0.2; // +/-20% jitter
-      const delayMs = backoffMs + jitterMs; 
+      if (isDead) {
+        await client.query(
+          `UPDATE jobs
+           SET status = '${JOB_STATUS.DEAD}', last_error = $1, 
+               ${CLEAR_LOCK_FIELDS_SQL}, updated_at = NOW()
+           WHERE id = $2`,
+          [errorMessage, jobId]
+        );
+        await client.query(
+          `INSERT INTO job_events (job_id, event_type, worker_id, error_message)
+           VALUES ($1, $2, $3, $4)`,
+          [jobId, JobEventType.FAILED_DEAD, workerId, errorMessage]
+        );
+      } else {
+        const delayMs = computeBackoffMs(attempts);
 
-      await client.query(
-        `UPDATE jobs
-         SET status = 'pending', last_error = $1, locked_at = NULL, locked_by = NULL,
-             lease_expires_at = NULL, run_at = NOW() + ($2 * INTERVAL '1 millisecond'),
-             updated_at = NOW()
-         WHERE id = $3`,
-        [errorMessage, delayMs, jobId]
-      );
-      await client.query(
-        `INSERT INTO job_events (job_id, event_type, worker_id, error_message)
-         VALUES ($1, 'failed_retry', $2, $3)`,
-        [jobId, workerId, errorMessage]
-      );
-    }
+        await client.query(
+          `UPDATE jobs
+           SET status = '${JOB_STATUS.PENDING}', last_error = $1, 
+               ${CLEAR_LOCK_FIELDS_SQL}, run_at = NOW() + ($2 * INTERVAL '1 millisecond'),
+               updated_at = NOW()
+           WHERE id = $3`,
+          [errorMessage, delayMs, jobId]
+        );
+        await client.query(
+          `INSERT INTO job_events (job_id, event_type, worker_id, error_message)
+           VALUES ($1, $2, $3, $4)`,
+          [jobId, JobEventType.FAILED_RETRY, workerId, errorMessage]
+        );
+      }
 
     await client.query('COMMIT');
   } catch (error) {
@@ -220,51 +221,47 @@ public async reapStaleJobs(): Promise<number> {
     try {
       await client.query('BEGIN');
 
-    const { rows: expired } = await client.query(
-      `SELECT id, attempts, max_attempts
-       FROM jobs
-       WHERE status = 'active' AND lease_expires_at < NOW()
-       FOR UPDATE SKIP LOCKED`
-    );
+      const { rows: expired } = await client.query(
+        `SELECT id, attempts, max_attempts
+         FROM jobs
+         WHERE status = '${JOB_STATUS.ACTIVE}' AND lease_expires_at < NOW()
+         FOR UPDATE SKIP LOCKED`
+      );
 
-    for (const job of expired) {
-      const isDead = job.attempts >= job.max_attempts;
+      for (const job of expired) {
+        const isDead = job.attempts >= job.max_attempts;
 
-      if (isDead) {
-        await client.query(
-          `UPDATE jobs
-           SET status = 'dead', last_error = $1, locked_at = NULL, locked_by = NULL,
-               lease_expires_at = NULL, updated_at = NOW()
-           WHERE id = $2`,
-          ['Lease expired — worker presumed dead', job.id]
-        );
-        await client.query(
-          `INSERT INTO job_events (job_id, event_type, error_message)
-           VALUES ($1, 'reaped_dead', $2)`,
-          [job.id, 'Lease expired — worker presumed dead']
-        );
-      } else {
-        const baseMs = 2000;
-        const capMs = 5 * 60 * 1000;
-        const backoffMs = Math.min(capMs, baseMs * 2 ** job.attempts);
-        const jitterMs = Math.random() * backoffMs * 0.2;
-        const delayMs = backoffMs + jitterMs;
+        if (isDead) {
+          await client.query(
+            `UPDATE jobs
+             SET status = '${JOB_STATUS.DEAD}', last_error = $1, 
+                 ${CLEAR_LOCK_FIELDS_SQL}, updated_at = NOW()
+             WHERE id = $2`,
+            [REAPER_ERROR_MESSAGE, job.id]
+          );
+          await client.query(
+            `INSERT INTO job_events (job_id, event_type, error_message)
+             VALUES ($1, $2, $3)`,
+            [job.id, JobEventType.REAPED_DEAD, REAPER_ERROR_MESSAGE]
+          );
+        } else {
+          const delayMs = computeBackoffMs(job.attempts);
 
-        await client.query(
-          `UPDATE jobs
-           SET status = 'pending', last_error = $1, locked_at = NULL, locked_by = NULL,
-               lease_expires_at = NULL, run_at = NOW() + ($2 * INTERVAL '1 millisecond'),
-               updated_at = NOW()
-           WHERE id = $3`,
-          ['Lease expired — worker presumed dead', delayMs, job.id]
-        );
-        await client.query(
-          `INSERT INTO job_events (job_id, event_type, error_message)
-           VALUES ($1, 'reaped_retry', $2)`,
-          [job.id, 'Lease expired — worker presumed dead']
-        );
+          await client.query(
+            `UPDATE jobs
+             SET status = '${JOB_STATUS.PENDING}', last_error = $1, 
+                 ${CLEAR_LOCK_FIELDS_SQL}, run_at = NOW() + ($2 * INTERVAL '1 millisecond'),
+                 updated_at = NOW()
+             WHERE id = $3`,
+            [REAPER_ERROR_MESSAGE, delayMs, job.id]
+          );
+          await client.query(
+            `INSERT INTO job_events (job_id, event_type, error_message)
+             VALUES ($1, $2, $3)`,
+            [job.id, JobEventType.REAPED_RETRY, REAPER_ERROR_MESSAGE]
+          );
+        }
       }
-    }
 
     await client.query('COMMIT');
     return expired.length;
