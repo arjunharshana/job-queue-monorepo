@@ -13,6 +13,7 @@
     "dev": "npm run dev --workspaces --if-present",
     "test:concurrency": "tsx scripts/manual-concurrency-test.ts",
     "test:failure": "tsx scripts/failure-cycle-test.ts",
+    "test:reaper": "tsx scripts/manual-reaper-test.ts",
     "migrate": "node-pg-migrate"
   },
   "devDependencies": {

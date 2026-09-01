@@ -213,5 +213,41 @@ public async fail(jobId: string, workerId: string, errorMessage: string): Promis
     client.release();
   }
 }
+
+public async reapStaleJobs(): Promise<number> {
+    const client = await this.pool.connect();
+    
+    try {
+      await client.query('BEGIN');
+
+      const reapQuery = `
+        WITH reaped AS (
+            UPDATE jobs
+            SET status = 'pending',
+                locked_at = NULL,
+                locked_by = NULL,
+                lease_expires_at = NULL,
+                updated_at = NOW()
+            WHERE status = 'active' 
+              AND lease_expires_at < NOW()
+            RETURNING id
+        )
+        INSERT INTO job_events (job_id, event_type)
+        SELECT id, 'reaped' FROM reaped
+        RETURNING job_id;
+      `;
+      
+      const { rowCount } = await client.query(reapQuery);
+
+      await client.query('COMMIT');
+      return rowCount ?? 0;
+
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
   
 }
