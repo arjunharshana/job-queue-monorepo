@@ -1,5 +1,5 @@
 import { Pool, PoolConfig } from 'pg';
-import { Job, EnqueueOptions, JsonValue } from './types.js';
+import { Job, EnqueueOptions, JsonValue, JsonObject } from './types.js';
 import {
   DEFAULT_MAX_ATTEMPTS,
   DEFAULT_LEASE_SECONDS,
@@ -20,9 +20,16 @@ export class JobQueue {
     await this.pool.end();
   }
 
+  public async getJob<T extends JsonValue = JsonObject>(
+    jobId: string
+  ): Promise<Job<T> | null> {
+    const { rows } = await this.pool.query('SELECT * FROM jobs WHERE id = $1', [jobId]);
+    return rows[0] ?? null;
+  }
+
   public async enqueue<T extends JsonValue>(options: EnqueueOptions<T>): Promise<Job<T>> {
     const client = await this.pool.connect();
-    
+
     try {
       await client.query('BEGIN');
 
@@ -33,7 +40,7 @@ export class JobQueue {
         VALUES ($1, $2, $3, $4, $5)
         RETURNING *;
       `;
-      
+
       const jobValues = [
         options.queueName,
         JSON.stringify(options.payload),
@@ -41,7 +48,7 @@ export class JobQueue {
         options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
         options.runAt ?? new Date()
       ];
-      
+
       const { rows: jobRows } = await client.query(jobInsertQuery, jobValues);
       const job = jobRows[0] as Job<T>;
 
@@ -68,7 +75,7 @@ export class JobQueue {
     leaseSeconds: number = DEFAULT_LEASE_SECONDS
   ): Promise<Job<T> | null> {
     const client = await this.pool.connect();
-    
+
     try {
       await client.query('BEGIN');
 
@@ -93,9 +100,9 @@ export class JobQueue {
         WHERE id = (SELECT id FROM next_job)
         RETURNING *;
       `;
-      
+
       const { rows } = await client.query(claimQuery, [queueName, workerId, leaseSeconds]);
-      
+
       if (rows.length === 0) {
         await client.query('COMMIT');
         return null;
@@ -120,10 +127,10 @@ export class JobQueue {
     }
   }
 
-public async complete(jobId: string, workerId: string): Promise<boolean> {
-  const client = await this.pool.connect();
-  try {
-    await client.query('BEGIN');
+  public async complete(jobId: string, workerId: string): Promise<boolean> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
 
       const updateQuery = `
         UPDATE jobs
@@ -135,30 +142,30 @@ public async complete(jobId: string, workerId: string): Promise<boolean> {
       `;
       const { rows } = await client.query(updateQuery, [jobId, workerId]);
 
-    if (rows.length === 0) {
-      await client.query('ROLLBACK');
-      return false;
-    }
+      if (rows.length === 0) {
+        await client.query('ROLLBACK');
+        return false;
+      }
 
       await client.query(
         `INSERT INTO job_events (job_id, event_type, worker_id) VALUES ($1, $2, $3)`,
         [jobId, JobEventType.COMPLETED, workerId]
       );
 
-    await client.query('COMMIT');
-    return true;
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
+      await client.query('COMMIT');
+      return true;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
-}
 
-public async fail(jobId: string, workerId: string, errorMessage: string): Promise<void> {
-  const client = await this.pool.connect();
-  try {
-    await client.query('BEGIN');
+  public async fail(jobId: string, workerId: string, errorMessage: string): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
 
       const selectQuery = `
         SELECT attempts, max_attempts FROM jobs
@@ -167,13 +174,13 @@ public async fail(jobId: string, workerId: string, errorMessage: string): Promis
       `;
       const { rows } = await client.query(selectQuery, [jobId, workerId]);
 
-    if (rows.length === 0) {
-      await client.query('ROLLBACK');
-      return;
-    }
+      if (rows.length === 0) {
+        await client.query('ROLLBACK');
+        return;
+      }
 
-    const { attempts, max_attempts } = rows[0];
-    const isDead = attempts >= max_attempts;
+      const { attempts, max_attempts } = rows[0];
+      const isDead = attempts >= max_attempts;
 
       if (isDead) {
         await client.query(
@@ -206,18 +213,18 @@ public async fail(jobId: string, workerId: string, errorMessage: string): Promis
         );
       }
 
-    await client.query('COMMIT');
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
-}
 
-public async reapStaleJobs(): Promise<number> {
+  public async reapStaleJobs(): Promise<number> {
     const client = await this.pool.connect();
-    
+
     try {
       await client.query('BEGIN');
 
@@ -263,14 +270,14 @@ public async reapStaleJobs(): Promise<number> {
         }
       }
 
-    await client.query('COMMIT');
-    return expired.length;
-  } catch (error) {
-    await client.query('ROLLBACK');
-    throw error;
-  } finally {
-    client.release();
+      await client.query('COMMIT');
+      return expired.length;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
   }
-}
-  
+
 }
