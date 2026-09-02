@@ -7,6 +7,12 @@ export const BACKOFF_JITTER_FRACTION = 0.2; // +/- 20%
 
 export const REAPER_ERROR_MESSAGE = 'Lease expired — worker presumed dead';
 
+export const JOB_STATUS = {
+  PENDING: 'pending',
+  ACTIVE: 'active',
+  COMPLETED: 'completed',
+  DEAD: 'dead',
+} as const;
 
 export const JobEventType = {
   CREATED: 'created',

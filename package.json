@@ -11,6 +11,8 @@
   "scripts": {
     "build": "npm run build --workspaces --if-present",
     "dev": "npm run dev --workspaces --if-present",
+    "test": "vitest",
+    "test:run": "vitest run",
     "test:concurrency": "tsx scripts/manual-concurrency-test.ts",
     "test:failure": "tsx scripts/failure-cycle-test.ts",
     "test:reaper": "tsx scripts/manual-reaper-test.ts",
@@ -22,6 +24,7 @@
     "node-pg-migrate": "^9.0.0",
     "pg": "^8.23.0",
     "tsx": "^4.23.13",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.11"
   }
 }
