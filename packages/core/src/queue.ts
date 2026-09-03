@@ -1,4 +1,4 @@
-import { Pool, PoolConfig } from 'pg';
+import { Pool, PoolClient, PoolConfig } from 'pg';
 import { Job, EnqueueOptions, JsonValue, JsonObject } from './types.js';
 import {
   DEFAULT_MAX_ATTEMPTS,
@@ -19,6 +19,23 @@ export class JobQueue {
   public async close(): Promise<void> {
     await this.pool.end();
   }
+  
+  private async withTransaction<T>(
+    work: (client: PoolClient) => Promise<T>
+  ): Promise<T> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const result = await work(client);
+      await client.query('COMMIT');
+      return result;
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
 
   public async getJob<T extends JsonValue = JsonObject>(
     jobId: string
@@ -28,11 +45,7 @@ export class JobQueue {
   }
 
   public async enqueue<T extends JsonValue>(options: EnqueueOptions<T>): Promise<Job<T>> {
-    const client = await this.pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
+    return this.withTransaction(async (client) => {
       const jobInsertQuery = `
         INSERT INTO jobs (
           queue_name, payload, priority, max_attempts, run_at
@@ -46,27 +59,19 @@ export class JobQueue {
         JSON.stringify(options.payload),
         options.priority ?? 0,
         options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
-        options.runAt ?? new Date()
+        options.runAt ?? new Date(),
       ];
 
       const { rows: jobRows } = await client.query(jobInsertQuery, jobValues);
       const job = jobRows[0] as Job<T>;
 
-      const eventInsertQuery = `
-        INSERT INTO job_events (job_id, event_type)
-        VALUES ($1, $2);
-      `;
-      await client.query(eventInsertQuery, [job.id, JobEventType.CREATED]);
+      await client.query(
+        `INSERT INTO job_events (job_id, event_type) VALUES ($1, $2)`,
+        [job.id, JobEventType.CREATED]
+      );
 
-      await client.query('COMMIT');
       return job;
-
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   public async claim<T extends JsonValue>(
@@ -74,23 +79,19 @@ export class JobQueue {
     workerId: string,
     leaseSeconds: number = DEFAULT_LEASE_SECONDS
   ): Promise<Job<T> | null> {
-    const client = await this.pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
+    return this.withTransaction(async (client) => {
       const claimQuery = `
         WITH next_job AS (
             SELECT id FROM jobs
-            WHERE queue_name = $1 
-              AND status = '${JOB_STATUS.PENDING}' 
+            WHERE queue_name = $1
+              AND status = '${JOB_STATUS.PENDING}'
               AND run_at <= NOW()
             ORDER BY priority ASC, run_at ASC
             LIMIT 1
             FOR UPDATE SKIP LOCKED
         )
         UPDATE jobs
-        SET 
+        SET
             status = '${JOB_STATUS.ACTIVE}',
             locked_at = NOW(),
             locked_by = $2,
@@ -104,34 +105,22 @@ export class JobQueue {
       const { rows } = await client.query(claimQuery, [queueName, workerId, leaseSeconds]);
 
       if (rows.length === 0) {
-        await client.query('COMMIT');
         return null;
       }
 
       const job = rows[0] as Job<T>;
 
-      const eventInsertQuery = `
-        INSERT INTO job_events (job_id, event_type, worker_id)
-        VALUES ($1, $2, $3);
-      `;
-      await client.query(eventInsertQuery, [job.id, JobEventType.CLAIMED, workerId]);
+      await client.query(
+        `INSERT INTO job_events (job_id, event_type, worker_id) VALUES ($1, $2, $3)`,
+        [job.id, JobEventType.CLAIMED, workerId]
+      );
 
-      await client.query('COMMIT');
       return job;
-
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   public async complete(jobId: string, workerId: string): Promise<boolean> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-
+    return this.withTransaction(async (client) => {
       const updateQuery = `
         UPDATE jobs
         SET status = '${JOB_STATUS.COMPLETED}',
@@ -143,8 +132,7 @@ export class JobQueue {
       const { rows } = await client.query(updateQuery, [jobId, workerId]);
 
       if (rows.length === 0) {
-        await client.query('ROLLBACK');
-        return false;
+        return false; // lease was already reassigned elsewhere
       }
 
       await client.query(
@@ -152,21 +140,12 @@ export class JobQueue {
         [jobId, JobEventType.COMPLETED, workerId]
       );
 
-      await client.query('COMMIT');
       return true;
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   public async fail(jobId: string, workerId: string, errorMessage: string): Promise<void> {
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-
+    return this.withTransaction(async (client) => {
       const selectQuery = `
         SELECT attempts, max_attempts FROM jobs
         WHERE id = $1 AND locked_by = $2 AND status = '${JOB_STATUS.ACTIVE}'
@@ -175,7 +154,6 @@ export class JobQueue {
       const { rows } = await client.query(selectQuery, [jobId, workerId]);
 
       if (rows.length === 0) {
-        await client.query('ROLLBACK');
         return;
       }
 
@@ -185,7 +163,7 @@ export class JobQueue {
       if (isDead) {
         await client.query(
           `UPDATE jobs
-           SET status = '${JOB_STATUS.DEAD}', last_error = $1, 
+           SET status = '${JOB_STATUS.DEAD}', last_error = $1,
                ${CLEAR_LOCK_FIELDS_SQL}, updated_at = NOW()
            WHERE id = $2`,
           [errorMessage, jobId]
@@ -200,7 +178,7 @@ export class JobQueue {
 
         await client.query(
           `UPDATE jobs
-           SET status = '${JOB_STATUS.PENDING}', last_error = $1, 
+           SET status = '${JOB_STATUS.PENDING}', last_error = $1,
                ${CLEAR_LOCK_FIELDS_SQL}, run_at = NOW() + ($2 * INTERVAL '1 millisecond'),
                updated_at = NOW()
            WHERE id = $3`,
@@ -212,22 +190,11 @@ export class JobQueue {
           [jobId, JobEventType.FAILED_RETRY, workerId, errorMessage]
         );
       }
-
-      await client.query('COMMIT');
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
   }
 
   public async reapStaleJobs(): Promise<number> {
-    const client = await this.pool.connect();
-
-    try {
-      await client.query('BEGIN');
-
+    return this.withTransaction(async (client) => {
       const { rows: expired } = await client.query(
         `SELECT id, attempts, max_attempts
          FROM jobs
@@ -241,7 +208,7 @@ export class JobQueue {
         if (isDead) {
           await client.query(
             `UPDATE jobs
-             SET status = '${JOB_STATUS.DEAD}', last_error = $1, 
+             SET status = '${JOB_STATUS.DEAD}', last_error = $1,
                  ${CLEAR_LOCK_FIELDS_SQL}, updated_at = NOW()
              WHERE id = $2`,
             [REAPER_ERROR_MESSAGE, job.id]
@@ -256,7 +223,7 @@ export class JobQueue {
 
           await client.query(
             `UPDATE jobs
-             SET status = '${JOB_STATUS.PENDING}', last_error = $1, 
+             SET status = '${JOB_STATUS.PENDING}', last_error = $1,
                  ${CLEAR_LOCK_FIELDS_SQL}, run_at = NOW() + ($2 * INTERVAL '1 millisecond'),
                  updated_at = NOW()
              WHERE id = $3`,
@@ -270,14 +237,7 @@ export class JobQueue {
         }
       }
 
-      await client.query('COMMIT');
       return expired.length;
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
+    });
   }
-
 }
