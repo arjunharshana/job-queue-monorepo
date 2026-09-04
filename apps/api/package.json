@@ -3,12 +3,16 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "scripts": {
-    "build": "tsc -b",
-    "dev": "tsc -b -w"
-  },
+ "scripts": {
+  "build": "tsc -b",
+  "dev": "tsx watch src/index.ts"
+},
   "dependencies": {
     "@jobqueue/core": "*",
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6"
   }
 }
