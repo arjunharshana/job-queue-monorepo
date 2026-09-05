@@ -16,7 +16,7 @@ app.use(express.json());
 
 const enqueueSchema = z.object({
   queueName: z.string().min(1),
-  payload: z.record(z.string(), z.any()), // refined below if needed
+  payload: z.record(z.string(), z.any()),
   priority: z.number().int().optional(),
   maxAttempts: z.number().int().positive().optional(),
   runAt: z.coerce.date().optional(),

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -b",
-    "dev": "tsc -b -w"
+    "dev": "tsx watch src/index.ts"
   },
   "dependencies": {
     "@jobqueue/core": "*",
