@@ -20,14 +20,6 @@ let reaperTimer: NodeJS.Timeout;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function processJob(job: Job<any>) {
-  console.log(`[${workerId}] Processing job ${job.id}...`);
-  await sleep(1500); 
-  if (Math.random() < 0.3) {
-    throw new Error('Simulated random API timeout');
-  }
-}
-
 function startReaper() {
   reaperTimer = setInterval(async () => {
     try {
@@ -56,7 +48,8 @@ async function startWorker() {
       }
 
       try {
-        await processJob(job);
+        console.log(`[${workerId}] Processing job ${job.id}...`);
+        await sleep(1500);
         await queue.complete(job.id, workerId);
         console.log(`[${workerId}] Job ${job.id} completed successfully.`);
       } catch (error: any) {

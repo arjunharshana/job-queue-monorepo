@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   postgres:
     image: postgres:16-alpine
@@ -11,6 +13,27 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
+
+  api:
+    build: .
+    command: npm run start -w apps/api
+    environment:
+      DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - postgres
+
+  worker:
+    build: .
+    command: npm run start -w apps/worker
+    environment:
+      DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
+    depends_on:
+      - postgres
+    deploy:
+      replicas: 3
 
 volumes:
   pgdata:
