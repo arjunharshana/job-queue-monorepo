@@ -30,6 +30,8 @@ services:
     command: npm run start -w apps/worker
     environment:
       DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
+      WORKER_QUEUE_NAME: email_notifications
+      WORKER_CONCURRENCY: 5
     depends_on:
       - postgres
     deploy:

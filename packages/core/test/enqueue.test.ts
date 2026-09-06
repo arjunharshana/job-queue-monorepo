@@ -14,7 +14,6 @@ describe('JobQueue.enqueue', () => {
     await queue.close();
   });
 
-  console.log('queue DB URL:', process.env.TEST_DATABASE_URL);
 
   it('creates a job with correct defaults and a created event', async () => {
     const job = await queue.enqueue({
