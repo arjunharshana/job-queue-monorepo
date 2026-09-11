@@ -14,16 +14,25 @@ services:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    container_name: job_queue_redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
   api:
     build: .
     command: npm run start -w apps/api
     environment:
       DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
+      REDIS_URL: redis://redis:6379
       PORT: 3000
     ports:
       - "3000:3000"
     depends_on:
       - postgres
+      - redis
 
   worker:
     build: .
