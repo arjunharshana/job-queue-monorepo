@@ -130,19 +130,11 @@ The easiest way to run the complete distributed stack is with Docker Compose.
 - Node.js 22
 - npm
 
-### 1. Boot the cluster
+### 1. Boot the database
 
 ```bash
-docker compose up -d --build
+docker compose up -d postgres
 ```
-
-This starts:
-
-- PostgreSQL
-- API
-- Worker 1
-- Worker 2
-- Worker 3
 
 ### 2. Apply database migrations
 
@@ -151,6 +143,19 @@ Run the migration command from the host:
 ```bash
 DATABASE_URL=postgres://postgres:password@localhost:5432/job_queue npm run migrate up
 ```
+
+### 3. Boot the cluster
+
+```bash
+docker compose up -d --build
+```
+
+This starts:
+
+- API
+- Worker 1
+- Worker 2
+- Worker 3
 
 ### 3. Stream the logs
 

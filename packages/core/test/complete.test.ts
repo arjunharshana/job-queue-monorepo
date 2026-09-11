@@ -38,25 +38,22 @@ describe('JobQueue.complete', () => {
     const enqueued = await queue.enqueue({ queueName: 'complete_test', payload: {} });
     const claimed = await queue.claim('complete_test', 'worker-1', 30);
 
-    // A different worker (e.g. one that lost its lease) tries to complete it.
     const success = await queue.complete(claimed!.id, 'worker-2');
     expect(success).toBe(false);
 
     const job = await queue.getJob(enqueued.id);
-    expect(job!.status).toBe('active'); // unchanged
-    expect(job!.locked_by).toBe('worker-1'); // still owned by the real claimant
+    expect(job!.status).toBe('active'); 
+    expect(job!.locked_by).toBe('worker-1');
 
     const { rows } = await testPool.query(
       `SELECT event_type FROM job_events WHERE job_id = $1 ORDER BY created_at ASC`,
       [enqueued.id]
     );
-    expect(rows.map((r) => r.event_type)).toEqual(['created', 'claimed']); // no 'completed' event
+    expect(rows.map((r) => r.event_type)).toEqual(['created', 'claimed']);
   });
 
   it('returns false when the job is not currently active', async () => {
     const enqueued = await queue.enqueue({ queueName: 'complete_test', payload: {} });
-    // Never claimed — still pending.
-
     const success = await queue.complete(enqueued.id, 'worker-1');
     expect(success).toBe(false);
   });

@@ -10,13 +10,13 @@ describe('computeBackoffMs', () => {
   });
 
   it('doubles exponentially with jitter', () => {
-    const ms = computeBackoffMs(3); // 2000 * 2^3 = 16000
+    const ms = computeBackoffMs(3);
     expect(ms).toBeGreaterThanOrEqual(16000);
     expect(ms).toBeLessThanOrEqual(16000 * 1.2);
   });
 
   it('respects the hard cap for high attempt counts', () => {
-    const ms = computeBackoffMs(20); // 20 attempts should hit the 5 min cap
+    const ms = computeBackoffMs(20);
     expect(ms).toBeGreaterThanOrEqual(BACKOFF_CAP_MS);
     expect(ms).toBeLessThanOrEqual(BACKOFF_CAP_MS * 1.2);
   });

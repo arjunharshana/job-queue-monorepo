@@ -2,8 +2,12 @@ import { config } from 'dotenv';
 import express, { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { JobQueue, JsonValue } from '@jobqueue/core';
+import { fileURLToPath } from 'url';
+import path from 'path';
 
-config({ path: '../../.env' });
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+config({ path: path.resolve(__dirname, '../../../.env') });
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
