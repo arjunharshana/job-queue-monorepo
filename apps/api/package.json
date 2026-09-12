@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc -b",
     "dev": "tsx watch src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "start:syncer": "node dist/syncer.js"
   },
   "dependencies": {
     "@jobqueue/core": "*",

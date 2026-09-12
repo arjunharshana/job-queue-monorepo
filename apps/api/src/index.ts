@@ -2,6 +2,7 @@ import { config } from 'dotenv';
 import express, { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { JobQueue, JsonValue } from '@jobqueue/core';
+import { Redis } from 'ioredis';
 import { fileURLToPath } from 'url';
 import path from 'path';
 
@@ -13,6 +14,10 @@ const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
   throw new Error('DATABASE_URL environment variable is missing');
 }
+
+// Initialize Redis connection
+const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+const redis = new Redis(redisUrl);
 
 const queue = new JobQueue({ connectionString });
 const app = express();
@@ -33,8 +38,18 @@ app.post('/jobs', async (req: Request, res: Response, next: NextFunction) => {
       return res.status(400).json({ error: { message: parsed.error.message } });
     }
 
-    const job = await queue.enqueue(parsed.data as { queueName: string; payload: JsonValue });
-    res.status(201).json(job);
+    // Buffer the job in Redis instead of writing directly to Postgres
+    const bufferedJob = {
+      ...parsed.data,
+      bufferedAt: new Date().toISOString()
+    };
+
+    await redis.rpush('job_buffer:pending', JSON.stringify(bufferedJob));
+
+    res.status(202).json({ 
+      status: 'buffered', 
+      queueName: parsed.data.queueName 
+    });
   } catch (error) {
     next(error);
   }

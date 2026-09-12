@@ -45,6 +45,16 @@ services:
       - postgres
     deploy:
       replicas: 3
+  
+  syncer:
+    build: .
+    command: npm run start:syncer -w apps/api
+    environment:
+      DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - postgres
+      - redis
 
 volumes:
   pgdata:

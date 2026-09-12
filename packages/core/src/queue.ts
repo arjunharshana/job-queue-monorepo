@@ -240,4 +240,42 @@ export class JobQueue {
       return expired.length;
     });
   }
+
+  public async enqueueBatch<T extends JsonValue>(
+    jobs: EnqueueOptions<T>[]
+  ): Promise<void> {
+    if (jobs.length === 0) return;
+
+    return this.withTransaction(async (client) => {
+      const values: any[] = [];
+      const placeholders: string[] = [];
+      let paramIndex = 1;
+
+      for (const job of jobs) {
+        placeholders.push(
+          `($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`
+        );
+        values.push(
+          job.queueName,
+          JSON.stringify(job.payload),
+          job.priority ?? 0,
+          job.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+          job.runAt ?? new Date()
+        );
+      }
+
+      // CTE inserts the jobs and immediately generates the creation events
+      const query = `
+        WITH new_jobs AS (
+          INSERT INTO jobs (queue_name, payload, priority, max_attempts, run_at)
+          VALUES ${placeholders.join(', ')}
+          RETURNING id
+        )
+        INSERT INTO job_events (job_id, event_type)
+        SELECT id, '${JobEventType.CREATED}' FROM new_jobs;
+      `;
+
+      await client.query(query, values);
+    });
+  }
 }
