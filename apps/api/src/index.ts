@@ -5,6 +5,7 @@ import { JobQueue, JsonValue } from '@jobqueue/core';
 import { Redis } from 'ioredis';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import { randomUUID } from 'node:crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -38,8 +39,10 @@ app.post('/jobs', async (req: Request, res: Response, next: NextFunction) => {
       return res.status(400).json({ error: { message: parsed.error.message } });
     }
 
-    // Buffer the job in Redis instead of writing directly to Postgres
+    const jobId = randomUUID();
+
     const bufferedJob = {
+      id: jobId,         
       ...parsed.data,
       bufferedAt: new Date().toISOString()
     };
@@ -47,6 +50,7 @@ app.post('/jobs', async (req: Request, res: Response, next: NextFunction) => {
     await redis.rpush('job_buffer:pending', JSON.stringify(bufferedJob));
 
     res.status(202).json({ 
+      id: jobId,
       status: 'buffered', 
       queueName: parsed.data.queueName 
     });

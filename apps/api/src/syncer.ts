@@ -17,27 +17,47 @@ const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
 const redis = new Redis(redisUrl);
 const queue = new JobQueue({ connectionString });
 
+const DEAD_LETTER_KEY = 'job_buffer:malformed';
+
+function safeParse(raw: string): EnqueueOptions<JsonValue> | null {
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
+
 async function startSyncer() {
   console.log('[Syncer] Started, watching Redis job_buffer:pending...');
-  
+
   while (true) {
     try {
-      // Block for up to 5 seconds waiting for the first job
       const popped = await redis.blpop('job_buffer:pending', 5);
       if (!popped) continue;
-      
-      const jobs: EnqueueOptions<JsonValue>[] = [JSON.parse(popped[1])];
 
+      const rawItems = [popped[1]];
       const rest = await redis.lpop('job_buffer:pending', 99);
-      if (rest) {
-        jobs.push(...rest.map((j: string) => JSON.parse(j)));
+      if (rest) rawItems.push(...rest);
+
+      const jobs: EnqueueOptions<JsonValue>[] = [];
+      for (const raw of rawItems) {
+        const parsed = safeParse(raw);
+        if (parsed) {
+          jobs.push(parsed);
+        } else {
+          // Don't silently drop malformed data — quarantine it for inspection.
+          console.error('[Syncer] Malformed job in buffer, quarantining:', raw);
+          await redis.rpush(DEAD_LETTER_KEY, raw);
+        }
       }
-      
-      await queue.enqueueBatch(jobs);
-      console.log(`[Syncer] Flushed batch of ${jobs.length} jobs to Postgres.`);
+
+      if (jobs.length > 0) {
+        await queue.enqueueBatch(jobs);
+        console.log(`[Syncer] Flushed batch of ${jobs.length} jobs to Postgres.`);
+      }
     } catch (err) {
       console.error('[Syncer] Error flushing batch:', err);
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
     }
   }
 }

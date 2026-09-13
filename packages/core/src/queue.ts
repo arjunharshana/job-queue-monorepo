@@ -8,6 +8,7 @@ import {
   REAPER_ERROR_MESSAGE,
 } from './constants.js';
 import { computeBackoffMs, CLEAR_LOCK_FIELDS_SQL } from './utils.js';
+import { randomUUID } from 'node:crypto';
 
 export class JobQueue {
   private pool: Pool;
@@ -242,7 +243,7 @@ export class JobQueue {
   }
 
   public async enqueueBatch<T extends JsonValue>(
-    jobs: EnqueueOptions<T>[]
+    jobs: (EnqueueOptions<T> & { id?: string })[]
   ): Promise<void> {
     if (jobs.length === 0) return;
 
@@ -253,9 +254,10 @@ export class JobQueue {
 
       for (const job of jobs) {
         placeholders.push(
-          `($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`
+          `($${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++}, $${paramIndex++})`
         );
         values.push(
+          job.id ?? randomUUID(),
           job.queueName,
           JSON.stringify(job.payload),
           job.priority ?? 0,
@@ -264,11 +266,11 @@ export class JobQueue {
         );
       }
 
-      // CTE inserts the jobs and immediately generates the creation events
       const query = `
         WITH new_jobs AS (
-          INSERT INTO jobs (queue_name, payload, priority, max_attempts, run_at)
+          INSERT INTO jobs (id, queue_name, payload, priority, max_attempts, run_at)
           VALUES ${placeholders.join(', ')}
+          ON CONFLICT (id) DO NOTHING
           RETURNING id
         )
         INSERT INTO job_events (job_id, event_type)
