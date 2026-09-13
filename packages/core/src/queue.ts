@@ -10,6 +10,11 @@ import {
 import { computeBackoffMs, CLEAR_LOCK_FIELDS_SQL } from './utils.js';
 import { randomUUID } from 'node:crypto';
 
+export interface ReapedJob {
+  id: string;
+  status: 'pending' | 'dead';
+}
+
 export class JobQueue {
   private pool: Pool;
 
@@ -20,7 +25,7 @@ export class JobQueue {
   public async close(): Promise<void> {
     await this.pool.end();
   }
-  
+
   private async withTransaction<T>(
     work: (client: PoolClient) => Promise<T>
   ): Promise<T> {
@@ -194,7 +199,15 @@ export class JobQueue {
     });
   }
 
-  public async reapStaleJobs(): Promise<number> {
+  /**
+   * Finds active jobs whose lease has expired (their worker is presumed
+   * dead) and returns them either to `pending` (with backoff, if retries
+   * remain) or `dead` (if attempts are exhausted) — the same branching
+   * logic as `fail`. Returns the affected jobs and their new status so
+   * callers (e.g. the worker's broadcast layer) can react per-job, rather
+   * than just a count.
+   */
+  public async reapStaleJobs(): Promise<ReapedJob[]> {
     return this.withTransaction(async (client) => {
       const { rows: expired } = await client.query(
         `SELECT id, attempts, max_attempts
@@ -202,6 +215,8 @@ export class JobQueue {
          WHERE status = '${JOB_STATUS.ACTIVE}' AND lease_expires_at < NOW()
          FOR UPDATE SKIP LOCKED`
       );
+
+      const results: ReapedJob[] = [];
 
       for (const job of expired) {
         const isDead = job.attempts >= job.max_attempts;
@@ -219,6 +234,7 @@ export class JobQueue {
              VALUES ($1, $2, $3)`,
             [job.id, JobEventType.REAPED_DEAD, REAPER_ERROR_MESSAGE]
           );
+          results.push({ id: job.id, status: 'dead' });
         } else {
           const delayMs = computeBackoffMs(job.attempts);
 
@@ -235,10 +251,11 @@ export class JobQueue {
              VALUES ($1, $2, $3)`,
             [job.id, JobEventType.REAPED_RETRY, REAPER_ERROR_MESSAGE]
           );
+          results.push({ id: job.id, status: 'pending' });
         }
       }
 
-      return expired.length;
+      return results;
     });
   }
 

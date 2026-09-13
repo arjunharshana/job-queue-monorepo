@@ -1,25 +1,33 @@
 import { config } from 'dotenv';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { Redis } from 'ioredis';
 import { JobQueue } from '@jobqueue/core';
 import { workerConfig } from './config.js';
 import { WorkerLoop } from './worker-loop.js';
-import './handlers.js'; // registers handlers as a side effect of import
+import './handlers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 config({ path: path.resolve(__dirname, '../../../.env') });
 
 const queue = new JobQueue({ connectionString: workerConfig.databaseUrl });
-const loop = new WorkerLoop(queue);
+const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
+const loop = new WorkerLoop(queue, redis);
 
 let reaperTimer: NodeJS.Timeout;
 
 function startReaper(): void {
   reaperTimer = setInterval(async () => {
     try {
-      const reapedCount = await queue.reapStaleJobs();
-      if (reapedCount > 0) {
-        console.log(`[${workerConfig.workerId}] Reaped ${reapedCount} stale job(s)`);
+      const reapedJobs = await queue.reapStaleJobs();
+      if (reapedJobs.length > 0) {
+        console.log(`[${workerConfig.workerId}] Reaped ${reapedJobs.length} stale job(s)`);
+        for (const job of reapedJobs) {
+          await redis.publish(
+            'job_events:broadcast',
+            JSON.stringify({ jobId: job.id, event: job.status === 'dead' ? 'reaped_dead' : 'reaped_retry' })
+          );
+        }
       }
     } catch (error) {
       console.error(`[${workerConfig.workerId}] Reaper error:`, error);
@@ -35,6 +43,7 @@ async function main(): Promise<void> {
   await loop.run();
   clearInterval(reaperTimer);
   await queue.close();
+  redis.disconnect();
   console.log(`[${workerConfig.workerId}] Shut down cleanly`);
   process.exit(0);
 }
