@@ -25,8 +25,8 @@ describe('JobQueue.reapStaleJobs', () => {
     const enqueued = await queue.enqueue({ queueName: 'reaper_test', payload: {} });
     await queue.claim('reaper_test', 'worker-1', 30);
 
-    const reapedCount = await queue.reapStaleJobs();
-    expect(reapedCount).toBe(0);
+    const reapedJobs = await queue.reapStaleJobs();
+    expect(reapedJobs).toHaveLength(0);
 
     const job = await queue.getJob(enqueued.id);
     expect(job!.status).toBe('active');
@@ -48,13 +48,17 @@ describe('JobQueue.reapStaleJobs', () => {
 
       await expireLease(claimed!.id);
 
-      const reapedCount = await queue.reapStaleJobs();
-      expect(reapedCount).toBeGreaterThanOrEqual(1);
+      const reapedJobs = await queue.reapStaleJobs();
+      expect(reapedJobs.length).toBeGreaterThanOrEqual(1);
+
+      const thisJob = reapedJobs.find((j) => j.id === enqueued.id);
+      expect(thisJob).toBeDefined();
 
       const job = await queue.getJob(enqueued.id);
 
       if (cycle < 3) {
         expect(job!.status).toBe('pending');
+        expect(thisJob!.status).toBe('pending');
 
         if (previousRunAt) {
           expect(job!.run_at.getTime()).toBeGreaterThan(previousRunAt.getTime());
@@ -64,6 +68,7 @@ describe('JobQueue.reapStaleJobs', () => {
         await testPool.query(`UPDATE jobs SET run_at = NOW() WHERE id = $1`, [enqueued.id]);
       } else {
         expect(job!.status).toBe('dead');
+        expect(thisJob!.status).toBe('dead');
       }
     }
 
@@ -92,8 +97,9 @@ describe('JobQueue.reapStaleJobs', () => {
     await expireLease(claimedA!.id);
     await expireLease(claimedB!.id);
 
-    const reapedCount = await queue.reapStaleJobs();
-    expect(reapedCount).toBe(2);
+    const reapedJobs = await queue.reapStaleJobs();
+    expect(reapedJobs).toHaveLength(2);
+    expect(reapedJobs.map((j) => j.status)).toEqual(['pending', 'pending']);
 
     expect((await queue.getJob(jobA.id))!.status).toBe('pending');
     expect((await queue.getJob(jobB.id))!.status).toBe('pending');
