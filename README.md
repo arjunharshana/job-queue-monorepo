@@ -9,7 +9,7 @@ A production-shaped, Postgres-first job queue built from scratch in TypeScript, 
 ```text
 job-queue-monorepo/
 ├── apps/
-│   ├── api/       — HTTP API: enqueue jobs and check status
+│   ├── api/       — HTTP API: enqueue jobs (buffered via Redis), check status, WebSocket broadcast
 │   └── worker/    — Job-processing daemon: claims, runs, and reports jobs
 └── packages/
     └── core/      — Shared queue engine; the only layer that talks to Postgres
@@ -20,26 +20,34 @@ The `core` package acts as a strict internal library. The API and worker are ind
 ### How it works
 
 ```text
-                         ┌──────────────┐
-                         │     API      │
-                         │  HTTP :3000  │
-                         └──────┬───────┘
-                                │
-                                ▼
-                    ┌──────────────────────┐
-                    │     PostgreSQL       │
-                    │                      │
-                    │  jobs + job_events  │
-                    └──────▲───────────────┘
-                           │
-             ┌─────────────┼─────────────┐
-             │             │             │
-       ┌─────┴─────┐ ┌─────┴─────┐ ┌─────┴─────┐
-       │  Worker 1 │ │  Worker 2 │ │  Worker 3 │
-       └───────────┘ └───────────┘ └───────────┘
+   ┌──────────────┐        ┌───────────┐        ┌─────────────┐
+   │   Client     │─POST─> │    API    │─RPUSH->│    Redis    │
+   └──────────────┘        │ HTTP :3000│        │ (buffer +   │
+          ▲                └─────┬─────┘        │  pub/sub)   │
+          │                      │              └─────────────┘
+          │ WebSocket            │ SUBSCRIBE            │ BLPOP
+          │ (live events)        │ job_events:broadcast │
+          │                      ▼                      ▼
+          │               ┌──────────────┐        ┌─────────────┐
+          └────────────── │   Dashboard  │        │   Syncer    │
+                          │   (planned)  │        │  (batches   │
+                          └──────────────┘        │  into PG)   │
+                                                  └──────┬──────┘
+                                                          │
+                                                          ▼
+                                            ┌──────────────────────┐
+                                            │     PostgreSQL       │
+                                            │  jobs + job_events   │
+                                            └──────▲───────────────┘
+                                                   │
+                                     ┌─────────────┼─────────────┐
+                                     │             │             │
+                               ┌─────┴─────┐ ┌─────┴─────┐ ┌─────┴─────┐
+                               │  Worker 1 │ │  Worker 2 │ │  Worker 3 │
+                               └───────────┘ └───────────┘ └───────────┘
 ```
 
-Workers independently poll PostgreSQL for available jobs. PostgreSQL provides the coordination mechanism, so no external broker or application-level distributed lock is required.
+The API buffers incoming jobs in Redis and returns immediately; a separate syncer batches them into PostgreSQL. Workers still coordinate exclusively through PostgreSQL — Redis is used only for ingestion buffering and live event broadcast, not for job claiming.
 
 ---
 
@@ -101,6 +109,14 @@ pending ──(claim)──> active ──(complete)──> completed
 
 - Every state change appends a record to `job_events` within the same transaction, providing a complete, historically accurate log for debugging and operational visibility.
 
+### Redis-buffered ingestion, eventual consistency
+
+- `POST /jobs` writes to a Redis list and returns `202 Accepted` immediately, rather than blocking on a Postgres transaction. A separate syncer process batches buffered jobs into PostgreSQL.
+
+### Live updates via Redis Pub/Sub + WebSockets
+
+- Workers publish a lightweight event to a Redis channel on every state transition (claimed, completed, failed, reaped). The API subscribes and fans events out to connected WebSocket clients. A dropped event affects only the live view, never the durable state in `job_events`.
+
 ---
 
 ## Tech Stack
@@ -110,7 +126,9 @@ pending ──(claim)──> active ──(complete)──> completed
 | Language | TypeScript (Strict Mode) |
 | Runtime | Node.js 22 |
 | Database | PostgreSQL 16 |
+| Message broker | Redis (ingestion buffer + pub/sub) |
 | API | Express + Zod |
+| Real-time transport | `ws` (raw WebSocket, no framework) |
 | Database Access | `pg` (Raw SQL) |
 | Migrations | `node-pg-migrate` |
 | Testing | Vitest |
@@ -130,10 +148,10 @@ The easiest way to run the complete distributed stack is with Docker Compose.
 - Node.js 22
 - npm
 
-### 1. Boot the database
+### 1. Boot the database and message broker
 
 ```bash
-docker compose up -d postgres
+docker compose up -d postgres redis
 ```
 
 ### 2. Apply database migrations
@@ -153,11 +171,12 @@ docker compose up -d --build
 This starts:
 
 - API
+- Syncer
 - Worker 1
 - Worker 2
 - Worker 3
 
-### 3. Stream the logs
+### 4. Stream the logs
 
 ```bash
 docker compose logs -f
@@ -185,7 +204,7 @@ curl -X POST http://localhost:3000/jobs \
   }'
 ```
 
-The API validates the request using Zod and persists the job to PostgreSQL.
+The API validates the request using Zod, buffers it in Redis, and returns immediately with a `202` and the job's ID. The job becomes visible via `GET /jobs/:id` once the syncer has flushed it to PostgreSQL.
 
 ### Check job status
 
@@ -194,6 +213,14 @@ curl http://localhost:3000/jobs/<job-id>
 ```
 
 The response can be used to inspect the current state of the job and its processing metadata.
+
+### Live job events
+
+Connect a WebSocket client to the API's HTTP port to receive job state changes as they happen:
+
+```bash
+npx tsx scripts/websocket-listener-test.ts
+```
 
 ---
 
@@ -230,6 +257,7 @@ The test suite verifies behavior including:
 - concurrent job claiming
 - audit event creation
 - prevention of duplicate claims
+- batch enqueueing
 
 ---
 
@@ -260,5 +288,21 @@ npx tsx scripts/manual-reaper-test.ts
 ```
 
 Demonstrates that an active job whose worker disappears can be detected after its lease expires and returned to the appropriate retry/dead-letter path.
+
+### Eventual consistency timing
+
+```bash
+npx tsx scripts/consistency-test.ts
+```
+
+Measures the actual gap between a job being accepted (`202`) and appearing in PostgreSQL, making the Redis-buffered ingestion tradeoff concrete rather than theoretical.
+
+### Live event broadcast
+
+```bash
+npx tsx scripts/websocket-listener-test.ts
+```
+
+Connects to the API's WebSocket endpoint and prints job state-change events as workers process jobs — direct evidence the Redis pub/sub → WebSocket bridge works end to end.
 
 ---
