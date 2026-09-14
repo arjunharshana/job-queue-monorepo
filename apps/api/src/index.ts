@@ -5,12 +5,20 @@ import { JobQueue } from '@jobqueue/core';
 import { apiConfig } from './config.js';
 import { createRoutes } from './routes.js';
 import { attachWebSocketBridge } from './websocket.js';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// 1. Setup __dirname for ES modules
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const queue = new JobQueue({ connectionString: apiConfig.databaseUrl });
 const redis = new Redis(apiConfig.redisUrl);
 
 const app = express();
 app.use(express.json());
+
+app.use(express.static(path.join(__dirname, '../public')));
+
 app.use(createRoutes(queue, redis));
 
 app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {

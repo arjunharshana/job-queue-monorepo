@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Real-Time Job Queue</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-gray-100 p-8 font-sans">
+  <div class="max-w-4xl mx-auto">
+    <div class="flex justify-between items-center mb-6">
+      <h1 class="text-3xl font-bold">Observability Dashboard</h1>
+      <span id="connection-status" class="px-3 py-1 rounded-full text-sm font-semibold bg-red-500/20 text-red-400">Disconnected</span>
+    </div>
+    
+    <div class="bg-gray-800 rounded-lg shadow-xl border border-gray-700 overflow-hidden">
+      <div class="bg-gray-900 px-4 py-2 border-b border-gray-700 grid grid-cols-12 gap-4 text-xs font-mono text-gray-500 uppercase tracking-wider">
+        <div class="col-span-2">Timestamp</div>
+        <div class="col-span-7">Job ID</div>
+        <div class="col-span-3">State Transition</div>
+      </div>
+      <div id="log-container" class="h-[600px] overflow-y-auto p-2 space-y-1">
+        <!-- Live events inject here -->
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const ws = new WebSocket(`ws://${window.location.host}`);
+    const container = document.getElementById('log-container');
+    const statusBadge = document.getElementById('connection-status');
+
+    const stateColors = {
+      created: 'text-blue-400 bg-blue-400/10 border-blue-400/20',
+      claimed: 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20',
+      completed: 'text-green-400 bg-green-400/10 border-green-400/20',
+      failed: 'text-red-400 bg-red-400/10 border-red-400/20',
+      reaped_retry: 'text-orange-400 bg-orange-400/10 border-orange-400/20',
+      reaped_dead: 'text-red-600 bg-red-600/10 border-red-600/20'
+    };
+
+    ws.onopen = () => {
+      statusBadge.textContent = 'Connected Live';
+      statusBadge.className = 'px-3 py-1 rounded-full text-sm font-semibold bg-green-500/20 text-green-400';
+    };
+
+    ws.onclose = () => {
+      statusBadge.textContent = 'Disconnected';
+      statusBadge.className = 'px-3 py-1 rounded-full text-sm font-semibold bg-red-500/20 text-red-400';
+    };
+
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      const row = document.createElement('div');
+      const style = stateColors[data.event] || 'text-gray-400 bg-gray-800 border-gray-700';
+      
+      row.className = `grid grid-cols-12 gap-4 items-center px-2 py-2 rounded border font-mono text-sm ${style}`;
+      row.innerHTML = `
+        <div class="col-span-2 opacity-75">${new Date().toLocaleTimeString()}</div>
+        <div class="col-span-7 font-bold tracking-tight">${data.jobId}</div>
+        <div class="col-span-3 uppercase font-semibold">${data.event.replace('_', ' ')}</div>
+      `;
+      
+      container.prepend(row);
+      
+      if (container.children.length > 200) {
+        container.lastChild.remove();
+      }
+    };
+  </script>
+</body>
+</html>
