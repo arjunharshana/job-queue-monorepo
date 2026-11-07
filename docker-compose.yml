@@ -33,6 +33,7 @@ services:
     depends_on:
       - postgres
       - redis
+    restart: unless-stopped
 
   worker:
     build: .
@@ -45,6 +46,7 @@ services:
       - postgres
     deploy:
       replicas: 3
+    restart: unless-stopped
   
   syncer:
     build: .
@@ -55,6 +57,7 @@ services:
     depends_on:
       - postgres
       - redis
+    restart: unless-stopped
 
 volumes:
   pgdata:

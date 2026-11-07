@@ -199,14 +199,6 @@ export class JobQueue {
     });
   }
 
-  /**
-   * Finds active jobs whose lease has expired (their worker is presumed
-   * dead) and returns them either to `pending` (with backoff, if retries
-   * remain) or `dead` (if attempts are exhausted) — the same branching
-   * logic as `fail`. Returns the affected jobs and their new status so
-   * callers (e.g. the worker's broadcast layer) can react per-job, rather
-   * than just a count.
-   */
   public async reapStaleJobs(): Promise<ReapedJob[]> {
     return this.withTransaction(async (client) => {
       const { rows: expired } = await client.query(
