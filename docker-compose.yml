@@ -9,17 +9,31 @@ services:
       POSTGRES_PASSWORD: password
       POSTGRES_DB: job_queue
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d job_queue"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
     image: redis:7-alpine
     container_name: job_queue_redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     restart: unless-stopped
+
+  migrate:
+    build: .
+    command: npm run migrate up
+    environment:
+      DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   api:
     build: .
@@ -31,8 +45,12 @@ services:
     ports:
       - "3000:3000"
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   worker:
@@ -43,7 +61,10 @@ services:
       WORKER_QUEUE_NAME: email_notifications
       WORKER_CONCURRENCY: 5
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     deploy:
       replicas: 3
     restart: unless-stopped
@@ -55,8 +76,12 @@ services:
       DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
       REDIS_URL: redis://redis:6379
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
 volumes:
