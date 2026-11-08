@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { JobQueue } from '@jobqueue/core';
 import { Redis } from 'ioredis';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 
 const enqueueSchema = z.object({
   queueName: z.string().min(1),
@@ -12,8 +12,34 @@ const enqueueSchema = z.object({
   runAt: z.coerce.date().optional(),
 });
 
+function requireApiKey(req: Request, res: Response, next: NextFunction) {
+  const providedKey = req.header('x-api-key') || '';
+  const expectedKey = process.env.API_KEY || '';
+
+  if (!expectedKey) {
+    return res.status(500).json({ error: { message: 'Server API_KEY not configured' } });
+  }
+
+  const providedBuffer = Buffer.from(providedKey);
+  const expectedBuffer = Buffer.from(expectedKey);
+
+  if (providedBuffer.length !== expectedBuffer.length || !timingSafeEqual(providedBuffer, expectedBuffer)) {
+    return res.status(401).json({ error: { message: 'Unauthorized' } });
+  }
+
+  next();
+}
+
 export function createRoutes(queue: JobQueue, redis: Redis): Router {
   const router = Router();
+
+  router.get('/health', (req, res) => {
+    res.status(200).json({ status: 'ok' });
+  });
+
+  // To drop in your custom WAF, run `npm install arjun-express-waf -w apps/api` 
+  // and add `router.use(expressWaf());` right above this line.
+  router.use(requireApiKey);
 
   router.post('/jobs', async (req: Request, res: Response, next: NextFunction) => {
     try {
