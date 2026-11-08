@@ -6,7 +6,7 @@ services:
     container_name: job_queue_db
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: password
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: job_queue
     ports:
       - "127.0.0.1:5432:5432"
@@ -22,6 +22,9 @@ services:
   redis:
     image: redis:7-alpine
     container_name: job_queue_redis
+    command: /bin/sh -c 'redis-server --requirepass "$${REDIS_PASSWORD}"'
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
     ports:
       - "127.0.0.1:6379:6379"
     restart: unless-stopped
@@ -30,7 +33,7 @@ services:
     build: .
     command: npm run migrate up
     environment:
-      DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
+      DATABASE_URL: ${DATABASE_URL}
     depends_on:
       postgres:
         condition: service_healthy
@@ -39,9 +42,10 @@ services:
     build: .
     command: npm run start -w apps/api
     environment:
-      DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
       PORT: 3000
+      API_KEY: ${API_KEY}
     ports:
       - "3000:3000"
     depends_on:
@@ -57,9 +61,10 @@ services:
     build: .
     command: npm run start -w apps/worker
     environment:
-      DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
       WORKER_QUEUE_NAME: email_notifications
-      WORKER_CONCURRENCY: 5
+      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-5}
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,8 +78,8 @@ services:
     build: .
     command: npm run start:syncer -w apps/api
     environment:
-      DATABASE_URL: postgres://postgres:password@postgres:5432/job_queue
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
     depends_on:
       postgres:
         condition: service_healthy
