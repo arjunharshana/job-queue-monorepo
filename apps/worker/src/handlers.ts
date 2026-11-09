@@ -36,3 +36,16 @@ registerHandler('webhook_delivery', async (job) => {
   console.log(`[handler] Delivering webhook to ${url}`);
   await new Promise((resolve) => setTimeout(resolve, 300));
 });
+
+registerHandler('load_test', async (job) => {
+  console.log(`[handler] Executing load_test for job ${job.id}`);
+  
+  const workMs = process.env.WORK_MS ? parseInt(process.env.WORK_MS, 10) : 50;
+  const failPercent = process.env.FAIL_PERCENT ? parseInt(process.env.FAIL_PERCENT, 10) : 0;
+  
+  await new Promise((resolve) => setTimeout(resolve, workMs));
+
+  if (failPercent > 0 && Math.random() * 100 < failPercent) {
+    throw new Error(`Simulated random failure (${failPercent}% chance)`);
+  }
+});
